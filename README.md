@@ -62,11 +62,24 @@ cp /path/to/your/manifest_*.zip ./manifest.zip
 Export your active OpenShift session token, then run the `deploy_aap.yml` playbook:
 
 ```bash
-# 1. Export current OpenShift auth token
+# 1. Export OpenShift connection facts
+export K8S_AUTH_HOST=$(oc whoami --show-server)
 export OCP_TOKEN=$(oc whoami -t)
+export CONTROLLER_USERNAME="admin"
 
-# 2. Run the deployment playbook
-ansible-playbook deploy_aap.yml -e '{"controller_validate_certs": false}'
+# 2. Extract Controller host & password secrets from OpenShift
+CTL_HOST=$(oc get route aap-controller -n aap -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+CTL_PASS=$(oc get secret aap-controller-admin-password -n aap -o jsonpath='{.data.password}' 2>/dev/null | base64 --decode || echo "")
+
+# 3. Run deployment playbook using JSON extra-vars (forces native booleans for SSL settings)
+ansible-playbook deploy_aap.yml -e '{
+  "controller_hostname": "'"${CTL_HOST}"'",
+  "controller_username": "admin",
+  "controller_password": "'"${CTL_PASS}"'",
+  "controller_validate_certs": false,
+  "aap_verify_ssl": false,
+  "bootstrap_controller_validate_certs": false
+}'
 ```
 
 > **Note on Initial Deployment:** On fresh cluster installs, the AAP operator will deploy pods in the `aap` namespace. If the initial run fails while waiting for secrets during Operator reconciliation, wait 1–2 minutes for pods to initialize (`oc get pods -n aap`) and re-run the `ansible-playbook` command above.
