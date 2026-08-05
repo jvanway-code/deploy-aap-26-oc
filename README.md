@@ -1,142 +1,125 @@
 # Deploy Ansible Automation Platform 2.6 on OpenShift
 
-This repository automates the deployment, bootstrapping, and licensing of Ansible Automation Platform (AAP) 2.6 on OpenShift (including Red Hat OpenShift Local / CRC) using Ansible deployment roles from `redhat-cop`.
+This repository provides a self-contained, native Ansible playbook (`deploy_aap.yml`) that automates the complete lifecycle of deploying, bootstrapping, health-checking, and licensing **Ansible Automation Platform (AAP) 2.6** on Red Hat OpenShift.
+
+---
+
+## What This Automation Does
+
+1. **Namespace & Operator Management:** Creates the `ansible-automation-platform` namespace, provisions the OperatorGroup, and subscribes to the `stable-2.6` channel.
+2. **Platform Instance Provisioning:** Deploys the `AnsibleAutomationPlatform` Custom Resource.
+3. **Automated Health Checks:** Waits for database migrations to complete and polls the AAP 2.6 Gateway health endpoint (`/api/controller/v2/ping/`).
+4. **Automated Subscription Licensing:** Automatically applies your local `manifest.zip` license using the `infra.controller_configuration.license` collection role.
+5. **Credential Output:** Displays the Gateway Web UI URL and auto-generated `admin` password upon completion.
 
 ---
 
 ## Prerequisites
 
-Before running the deployment, ensure the following are installed and configured on your workstation:
+Ensure the following tools and assets are ready on your workstation:
 
-1. **OpenShift CLI (`oc`)**: Installed and logged into the target cluster (`oc login` or active CRC session).
+1. **OpenShift CLI (`oc`)**: Installed and logged in to your target cluster as a cluster administrator.
 2. **Ansible Core**: Installed locally (`ansible-playbook` 2.15+).
 3. **Red Hat Subscription Manifest**: A valid AAP subscription manifest `.zip` file from the [Red Hat Customer Portal](https://access.redhat.com/).
 
 ---
 
-## Step-by-Step Deployment Guide
+## Repository Structure
 
-### Step 1: Verify OpenShift Connection
-
-Ensure your shell is authenticated with OpenShift. If using Red Hat OpenShift Local / CRC:
-
-```bash
-eval $(crc oc-env)
-```
-
-Verify `oc` connectivity and logged-in user:
-
-```bash
-oc whoami
-```
+.
+├── ansible.cfg          # Ansible CLI configuration settings
+├── deploy_aap.yml       # Main end-to-end deployment playbook
+├── manifest.zip         # Red Hat AAP Subscription Manifest file
+├── requirements.yml     # Required Ansible collection dependencies
+└── README.md            # Repository documentation
 
 ---
 
-### Step 2: Configure Automation Hub Credentials & Install Collections
+## Step-by-Step Deployment Guide
 
-Set your Red Hat Automation Hub Offline Token (obtainable from the [Red Hat Hybrid Cloud Console](https://console.redhat.com/ansible/automation-hub/token)) as an environment variable, then install required collections:
+### Step 1: Log into Your OpenShift Cluster
 
-```bash
-# Export Red Hat Offline Token
-export ANSIBLE_GALAXY_SERVER_AUTOMATION_HUB_TOKEN="<YOUR_RH_OFFLINE_TOKEN>"
-export ANSIBLE_GALAXY_SERVER_AUTOMATION_HUB_VALIDATED_TOKEN="<YOUR_RH_OFFLINE_TOKEN>"
+Authenticate your CLI session against the target cluster:
 
-# Install Ansible Galaxy Dependencies
+oc login https://api.<your-cluster-domain>:6443 \
+  -u admin \
+  -p <your-password> \
+  --insecure-skip-tls-verify=true
+
+Verify your active session:
+
+oc whoami
+
+---
+
+### Step 2: Install Ansible Collection Dependencies
+
+Install the required Ansible collections (`kubernetes.core` and `infra.controller_configuration`):
+
 ansible-galaxy collection install -r requirements.yml --force
-```
 
 ---
 
 ### Step 3: Add Subscription Manifest File
 
-Copy your Red Hat Subscription Manifest `.zip` file into the root of this repository and rename it to `manifest.zip`:
+Copy your Red Hat Subscription Manifest file into the root of this repository directory and ensure it is named `manifest.zip`:
 
-```bash
 cp /path/to/your/manifest_*.zip ./manifest.zip
-```
 
 ---
 
-### Step 4: Export OpenShift Auth Token & Run Playbook
+### Step 4: Run the Deployment Playbook
 
-Export your active OpenShift session token, then run the `deploy_aap.yml` playbook:
+Execute the playbook directly:
 
-```bash
-# 1. Export OpenShift connection facts
-export K8S_AUTH_HOST=$(oc whoami --show-server)
-export OCP_TOKEN=$(oc whoami -t)
-export CONTROLLER_USERNAME="admin"
-
-# 2. Extract Controller host & password secrets from OpenShift
-CTL_HOST=$(oc get route aap-controller -n aap -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
-CTL_PASS=$(oc get secret aap-controller-admin-password -n aap -o jsonpath='{.data.password}' 2>/dev/null | base64 --decode || echo "")
-
-# 3. Run deployment playbook using JSON extra-vars (forces native booleans for SSL settings)
-ansible-playbook deploy_aap.yml -e '{
-  "controller_hostname": "'"${CTL_HOST}"'",
-  "controller_username": "admin",
-  "controller_password": "'"${CTL_PASS}"'",
-  "controller_validate_certs": false,
-  "aap_verify_ssl": false,
-  "bootstrap_controller_validate_certs": false
-}'
-```
-
-> **Note on Initial Deployment:** On fresh cluster installs, the AAP operator will deploy pods in the `aap` namespace. If the initial run fails while waiting for secrets during Operator reconciliation, wait 1–2 minutes for pods to initialize (`oc get pods -n aap`) and re-run the `ansible-playbook` command above.
+ansible-playbook deploy_aap.yml
 
 ---
 
-## Post-Deployment & Verification
+## Monitoring the Deployment
 
-### Step 1: Verify Pod Health
+While the playbook is running, you can monitor pod initialization in real time from a separate terminal window:
 
-Check that all AAP operator and instance pods are in `Running` or `Completed` state:
+oc get pods -n ansible-automation-platform -w
 
-```bash
-oc get pods -n aap
-```
+> **Note on Initial Deployment Duration:** The initial database migration job (`aap-controller-migration-...`) typically takes **5 to 10 minutes** to seed the schema. The playbook will automatically wait for the web interface to respond before applying the license.
 
 ---
 
-### Step 2: Retrieve Passwords
+## Accessing Your AAP Instance
 
-* **AAP Gateway Web UI Password (Primary Entrypoint):**
-  ```bash
-  echo "Username: admin"
-  echo "Password: $(oc get secret aap-admin-password -n aap -o jsonpath='{.data.password}' | base64 --decode)"
-  ```
+When the playbook completes successfully, it will print your access details:
 
-* **Direct Controller API Password:**
-  ```bash
-  echo "Username: admin"
-  echo "Password: $(oc get secret aap-controller-admin-password -n aap -o jsonpath='{.data.password}' | base64 --decode)"
-  ```
+====================================================
+  AAP 2.6 Deployment & Licensing Complete!           
+====================================================
+  URL:      https://aap-ansible-automation-platform.apps...
+  Username: admin
+  Password: <auto-generated-password>
+====================================================
 
----
+If you ever need to manually retrieve the Gateway credentials later:
 
-### Step 3: Display Access URLs
+# Extract Web UI Route
+oc get route aap -n ansible-automation-platform -o jsonpath='{"https://"}{.spec.host}{"\n"}'
 
-Display the generated OpenShift routes for the Gateway and Controller:
-
-```bash
-echo "AAP Gateway Web UI:  https://$(oc get route aap -n aap -o jsonpath='{.spec.host}')"
-echo "AAP Controller API:  https://$(oc get route aap-controller -n aap -o jsonpath='{.spec.host}')"
-```
+# Extract Admin Password
+oc get secret aap-admin-password -n ansible-automation-platform -o jsonpath='{.data.password}' | base64 -d; echo
 
 ---
 
-## Troubleshooting
+## Resetting / Teardown Procedure
 
-### Clearing / Resetting Deployment
+To completely wipe the AAP deployment and clear the cluster for a fresh test run:
 
-To completely wipe the AAP instance and start clean:
+# 1. Delete the Project
+oc delete project ansible-automation-platform
 
-```bash
-# Delete AAP project
-oc delete project aap
+# 2. Delete any lingering cluster-scoped console links
+oc delete consolelink -l app.kubernetes.io/managed-by=automation-controller-operator --ignore-not-found=true
+oc delete consolelink aap-aap aap-controller-aap aap-eda-aap --ignore-not-found=true
 
-# Wait for namespace deletion
-oc get ns aap --watch
-```
+# 3. Watch until OpenShift finishes namespace removal
+oc get ns ansible-automation-platform --watch
 
-Once the namespace is completely removed, re-run **Step 4** to trigger a fresh installation.
+Once output shows `NotFound`, re-run `ansible-playbook deploy_aap.yml` to practice a fresh deployment!
